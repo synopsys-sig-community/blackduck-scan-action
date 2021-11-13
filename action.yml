@@ -1,0 +1,65 @@
+name: "Black Duck Scan"
+description: "Black Duck Scanning for GitHub CI/CD Workflows"
+author: "James Croall"
+branding:
+  icon: "alert-triangle"
+  color: "yellow"
+inputs:
+  debug:
+    description: "Debugging"
+    default: "0"
+  url:
+    description: "Black Duck URL"
+  token:
+    description: "Black Duck API Token"
+  project:
+    description: "Project name in the Black Duck server"
+  mode:
+    description: "Scanning mode, intelligent or rapid"
+    default: "intelligent"
+  file:
+    description: "Location of the related file in the repository"
+  output:
+    description: "Directory in which to save the rapid scan output"
+    default: "blackduck-output"
+  fix_pr:
+    description: "Generate a Fix PR for each insecure component"
+    default: "false"
+  upgrade_major:
+    description: "Recommend upgrade guidance to major, not just minor, versions"
+    default: "false"
+  comment_on_pr:
+    description: "Comment on a pull request"
+    default: "false"
+  sarif:
+    description: "Output file for SARIF"
+    default: "blackduck-sarif.json"
+  incremental_results:
+    description: "Incremental analysis"
+    default: "false"
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  args:
+  - --debug
+  - ${{ inputs.debug }}
+  - --url
+  - ${{ inputs.url }}
+  - --token
+  - ${{ inputs.token }}
+  - --mode
+  - ${{ inputs.mode }}
+  - --output
+  - ${{ inputs.output }}
+  - --project
+  - ${{ inputs.project }}
+  - --fix_pr
+  - ${{ inputs.fix_pr }}
+  - --upgrade_major
+  - ${{ inputs.upgrade_major }}
+  - --comment_on_pr
+  - ${{ inputs.comment_on_pr }}
+  - --sarif
+  - ${{ inputs.sarif }}
+  - --incremental_results
+  - ${{ inputs.incremental_results }}

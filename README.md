@@ -6,7 +6,7 @@ A [GitHub Action](https://github.com/features/actions) for launching a Black Duc
 - Import Black Duck vulnerabilities as code scanning alerts via SARIF
 - Open a fix pull request for vulnerable components with an available upgrade
 
-This script is provided under an OSS license (specified in the LICENSE file) and has been developed by Synopsys field engineers as a contribution to the Synopsys user community. Please direct questions and comments to the [Black Duck Integrations Forum|https://community.synopsys.com/s/topic/0TO34000000gGZnGAM/black-duck-integrations] in the Synopsys user community.
+This script is provided under an OSS license (specified in the LICENSE file) and has been developed by Synopsys field engineers as a contribution to the Synopsys user community. Please direct questions and comments to the [Black Duck Integrations Forum](https://community.synopsys.com/s/topic/0TO34000000gGZnGAM/black-duck-integrations) in the Synopsys user community.
 
 The following technology stacks are currently supported:
 - Javascript.Node.js/NPM

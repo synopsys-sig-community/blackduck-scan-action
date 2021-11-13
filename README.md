@@ -108,9 +108,14 @@ jobs:
 
 ## Inputs
 
-The Black Duck Scanning action has a number of input parameters that can be passed using `with`.
+The Black Duck Scanning action has a number of input parameters that can be passed using `with`. All input parameters have default vaules that should ensure reasonable default behavior.
 
 | Property | Default | Description |
 | --- | --- | --- |
-| incremental_results | false | ... |
+| mode | intelligent | Run either an intelligent scan (comprehensive, and update central database with component versions) or rapid scan (runs in seconds, ephemeral)|
+| sarif | blackduck-sarif.json | Output results in SARIF file suitable for import into GitHub |
+| comment_on_pr | false | If running triggered by a pull request, leave a comment on the pull request with the reported issues |
+| fix_pr | false | Generate a fix pull request if a vulnerable componenent has an available upgrade path |
+| upgrade_major | false | Include upgrades that are beyond the current major version of the component being used - note, this can introduce a breaking change if the component's APIs are sufficiently different |
+| incremental_results | false | Filter the output to only report on newly introduced components. Do not report on any vulnerabilities on component versions previously detected in the project |
 

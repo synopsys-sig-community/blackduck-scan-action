@@ -1,4 +1,4 @@
-# Black Duck Scan Action
+# [PROTOTYPE] Black Duck Scan Action
 A [GitHub Action](https://github.com/features/actions) for launching a Black Duck scan as part of a GitHub CI/CD workflow, offering a number of workflow use cases:
 - Break the build if a security policy is not met
 - Run fast, incremental scans on a pull request, only reporting newly introduced components

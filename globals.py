@@ -1,5 +1,7 @@
 detect_jar = "/synopsys-detect.jar"
-workflow_script = "/blackduck-rapid-scan-to-sarif-bdio.py"
+workflow_script = "/blackduck-rapid-scan-to-github.py"
+#detect_jar = "./synopsys-detect.jar"
+#workflow_script = "/Users/jcroall/PycharmProjects/blackduck-scan-action/blackduck-rapid-scan-to-github.py"
 url = ""
 token = ""
 project = ""

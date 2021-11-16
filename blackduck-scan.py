@@ -5,7 +5,7 @@ import json
 import sys
 import os
 import subprocess
-import BlackDuckUtils
+from BlackDuckUtils import Utils as bu
 import WorkflowUtils
 import globals
 
@@ -64,7 +64,7 @@ if __name__ == "__main__":
 
     print(f"INFO: Running Black Duck detect with the following options: {runargs}")
 
-    pvurl, projname, vername, detect_return_code = BlackDuckUtils.run_detect(globals.detect_jar, runargs)
+    pvurl, projname, vername, detect_return_code = bu.run_detect(globals.detect_jar, runargs)
 
     print(f"INFO: Done with Black Duck run, return value {detect_return_code}")
     if (detect_return_code > 0 and detect_return_code != 3):

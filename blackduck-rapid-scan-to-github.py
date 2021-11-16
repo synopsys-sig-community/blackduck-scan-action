@@ -10,29 +10,19 @@ import sys
 import zipfile
 
 import networkx as nx
+from BlackDuckUtils import BlackDuckOutput as bo
+from BlackDuckUtils import Utils as bu
+from BlackDuckUtils import bdio as bdio
+from BlackDuckUtils import globals as bdglobals
+
+from BlackDuckUtils import MavenUtils
+from BlackDuckUtils import NpmUtils
+
 from blackduck import Client
 from github import Github
 
 import globals
 
-import MavenUtils
-import NpmUtils
-
-def line_num_for_phrase_in_file(phrase, filename):
-    try:
-        with open(filename,'r') as f:
-            for (i, line) in enumerate(f):
-                if phrase.lower() in line.lower():
-                    return i
-    except:
-        return -1
-    return -1
-
-def remove_cwd_from_filename(path):
-    cwd = os. getcwd()
-    cwd = cwd + "/"
-    new_filename = path.replace(cwd, "")
-    return new_filename
 
 def github_create_pull_request_comment(g, github_repo, pr, pr_commit, comments_markdown, comments_markdown_footer):
     if (globals.debug): print(f"DEBUG: Look up GitHub repo '{github_repo}'")
@@ -96,18 +86,6 @@ Pull request submitted by Synopsys Black Duck to upgrade {fix_pr_node['component
     pr = repo.create_pull(title=f"Black Duck: Upgrade {fix_pr_node['componentName']} to version {fix_pr_node['versionTo']} fix known security vulerabilities", body=pr_body, head=new_branch_name, base="master")
 
 
-def detect_package_file(package_files, component_identifier, component_name):
-    ptype, comp_name, version = parse_component_id(component_identifier)
-
-    for package_file in package_files:
-        if (globals.debug): print(f"DEBUG: Searching in '{package_file}' for '{comp_name}'")
-        line = line_num_for_phrase_in_file(comp_name, package_file)
-        if (globals.debug): print(f"DEBUG: line={line}'")
-        if (line > 0):
-            return package_file, line
-
-    return "Unknown", 1
-
 def get_pull_requests(g, github_repo):
     if (globals.debug): print(f"DEBUG: Index pull requests, Look up GitHub repo '{github_repo}'")
     repo = g.get_repo(github_repo)
@@ -124,53 +102,6 @@ def get_pull_requests(g, github_repo):
     return pull_requests
 
 
-def generate_fix_pr_npmjs(filename, filename_local, component_name, version_from, version_to):
-    try:
-        with open(filename) as jsonfile:
-            data = json.load(jsonfile)
-    except:
-        print(f"ERROR: Unable to open package file '{filename}'")
-        sys.exit(1)
-
-    # TODO Is it more correct to only upgrade to compatible versions according to semver?
-    # That doesn't seem aggressive enough
-    if (globals.debug): print(f"DEBUG: Searching {filename} for component '{component_name}' ...")
-    for dependency in data['dependencies'].keys():
-        if (dependency == component_name):
-            if (globals.debug): print(f"DEBUG:   Found '{component_name}' and it is version '{data['dependencies'][dependency]}', change to version {version_to}")
-            data['dependencies'][dependency] = "^" + version_to
-
-    # Attempt to preserve NPM formatting by not sorting and using indent=2
-    if (globals.debug): print(f"DEBUG:   Writing changes to {filename_local}")
-    try:
-        with open(filename_local, "w") as jsonfile:
-            json.dump(data, jsonfile, indent=2)
-    except:
-        print(f"ERROR: Unable to write package file '{filename_local}'")
-        sys.exit(1)
-
-    return filename, filename_local
-
-def read_json_object(filepath):
-    with open(filepath) as jsonfile:
-        data = json.load(jsonfile)
-        return data
-
-def zip_extract_files(zip_file, dir_name):
-    print("Extracting content of {} into {}".format(zip_file, dir_name))
-    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-        zip_ref.extractall(dir_name)
-
-def bdio_read(bdio_in, inputdir):
-    zip_extract_files(bdio_in, inputdir)
-    filelist = os.listdir(inputdir)
-    for filename in filelist:
-        #print ("processing {}".format(filename))
-        if (filename.startswith("bdio-entry")):
-            filepath_in = os.path.join(inputdir, filename)
-            data = read_json_object(filepath_in)
-            return data
-        
 def get_comps(bd, pv):
     comps = bd.get_json(pv + '/components?limit=5000')
     newcomps = []
@@ -201,22 +132,6 @@ def get_projver(bd, projname, vername):
     print("ERROR: Version '{}' does not exist in project '{}'".format(projname, vername))
     return ''
 
-def parse_component_id(component_id):
-    comp_domain = component_id.split(':')[0]
-    comp_name = ""
-    comp_version = ""
-
-    if (comp_domain == "npmjs"):
-        comp_domain, comp_name, comp_version = NpmUtils.parse_component_id(component_id)
-    elif (comp_domain == "maven"):
-        comp_domain, comp_name, comp_version = MavenUtils.parse_component_id(component_id)
-    else:
-        print(f"ERROR: Package domain '{comp_domain}' is unsupported at this time")
-        sys.exit(1)
-
-    return comp_domain, comp_name, comp_version
-
-
 # Parse command line arguments
 parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
                 description='Generate GitHub SARIF file from Black Duck Rapid Scan')
@@ -231,17 +146,18 @@ parser.add_argument('--comment_on_pr', default=False, action='store_true', help=
 parser.add_argument('--all_comps', default=False, action='store_true', help='Report on ALL components, not just newly introduced')
 parser.add_argument('--upgrade_indirect', default=False, action='store_true', help='Attemp to upgrade indirect dependencies')
 
-
 args = parser.parse_args()
 
 globals.debug = int(args.debug)
+bdglobals.debug = globals.debug
+# TODO Better to read BD API Token from environment variable
 #bd_apitoken = os.getenv("BLACKDUCK_TOKEN")
 #if (bd_apitoken == None or bd_apitoken == ""):
 #    print("ERROR: Please set BLACKDUCK_TOKEN in environment before running")
 #    sys.exit(1)
 bd_apitoken = args.token
 bd_url = args.url
-bd_rapid_output_dir = args.output_directory
+bd_output_dir = args.output_directory
 upgrade_major = args.upgrade_major
 sarif_output_file = args.output
 fix_pr = args.fix_pr
@@ -255,34 +171,7 @@ bd = Client(token=bd_apitoken,
         base_url=bd_url,
         timeout=300)
 
-# Parse deetctor output
-# blackduck-output-38280/runs/2021-10-30-14-17-33-881/status/status.json
-bd_rapid_output_status_glob = glob.glob(bd_rapid_output_dir + "/runs/*/status/status.json")
-if (len(bd_rapid_output_status_glob) == 0):
-    print("ERROR: Unable to find output scan files in: " + bd_rapid_output_dir + "/runs/*/status/status.json")
-    sys.exit(1)
-
-bd_rapid_output_status = bd_rapid_output_status_glob[0]
-
-print("INFO: Parsing Black Duck Rapid Scan output from " + bd_rapid_output_status)
-with open(bd_rapid_output_status) as f:
-    output_status_data = json.load(f)
-
-if (globals.debug): print(f"DEBUG: Status dump: " + json.dumps(output_status_data, indent=4))
-
-detected_package_files = []
-for detector in output_status_data['detectors']:
-    # Reverse order so that we get the priority from detect
-    for explanation in reversed(detector['explanations']):
-        if (str.startswith(explanation, "Found file: ")):
-            package_file = explanation[len("Found file: "):]
-            if (os.path.isfile(package_file)):
-                detected_package_files.append(package_file)
-                if (globals.debug): print(f"DEBUG: Explanation: {explanation} File: {package_file}")
-
-# Find project name and version to use in looking up baseline data
-project_baseline_name = output_status_data['projectName']
-project_baseline_version = output_status_data['projectVersion']
+project_baseline_name, project_baseline_version, detected_package_files = bo.get_blackduck_status(bd_output_dir)
 
 print(f"INFO: Running for project '{project_baseline_name}' version '{project_baseline_version}'")
 
@@ -307,77 +196,13 @@ if (not allcomps):
         if (globals.debug): print(f"DEBUG: Baseline component cache=" + json.dumps(baseline_comp_cache, indent=4))
         if (globals.debug): print(f"DEBUG: Generated baseline component cache")
 
-# Parse BDIO file into network graph
-bd_rapid_output_bdio_glob = glob.glob(bd_rapid_output_dir + "/runs/*/bdio/*.bdio")
-if (len(bd_rapid_output_bdio_glob) == 0):
-    print("ERROR: Unable to find output scan files in: " + bd_rapid_output_dir + "/runs/*/bdio/*.bdio")
-    sys.exit(1)
+bdio_graph, bdio_projects = bdio.get_bdio_dependency_graph(bd_output_dir)
 
-bd_rapid_output_bdio = bd_rapid_output_bdio_glob[0]
-
-bd_rapid_output_bdio_dir = glob.glob(bd_rapid_output_dir + "/runs/*/bdio")[0]
-# TODO is there a case where there would be more than one BDIO file?
-bdio_data = bdio_read(bd_rapid_output_bdio, bd_rapid_output_bdio_dir)
-if (globals.debug):
-    print(f"DEBUG: BDIO Dump: "+ json.dumps(bdio_data, indent=4))
-
-# Construct dependency graph
-G = nx.DiGraph()
-
-if (globals.debug): print("DEBUG: Create dependency graph...")
-# Save project for later so we can find the direct dependencies
-projects = []
-for node in bdio_data['@graph']:
-    parent = node['@id']
-    if (globals.debug): print(f"DEBUG: Parent {parent}")
-
-    nx_node = None
-
-    if "https://blackducksoftware.github.io/bdio#hasDependency" in node:
-        if (isinstance(node['https://blackducksoftware.github.io/bdio#hasDependency'], list)):
-            for dependency in node['https://blackducksoftware.github.io/bdio#hasDependency']:
-                child = dependency['https://blackducksoftware.github.io/bdio#dependsOn']['@id']
-                if (globals.debug): print(f"DEBUG:   Dependency on {child}")
-                nx_node = G.add_edge(parent, child)
-        else:
-            child = node['https://blackducksoftware.github.io/bdio#hasDependency']['https://blackducksoftware.github.io/bdio#dependsOn']['@id']
-            if (globals.debug): print(f"DEBUG:   (2) Dependency on {child}")
-            nx_node = G.add_edge(parent, child)
-
-        if node['@type'] == "https://blackducksoftware.github.io/bdio#Project":
-            projects.append(parent)
-            if (globals.debug): print(f"DEBUG:   Project name is {parent}")
-            G.add_node(parent, project=1)
-    else:
-        nx_node = G.add_node(parent)
-
-if (len(projects) == 0):
+if (len(bdio_projects) == 0):
     print("ERROR: Unable to find base project in BDIO file")
     sys.exit(1)
 
-# Parse the Rapid Scan output, assuming there is only one run in the directory
-bd_rapid_output_file_glob = glob.glob(bd_rapid_output_dir + "/runs/*/scan/*.json")
-if (len(bd_rapid_output_file_glob) == 0):
-    print("ERROR: Unable to find output scan files in: " + bd_rapid_output_dir + "/runs/*/scan/*.json")
-    sys.exit(1)
-
-bd_rapid_output_file = bd_rapid_output_file_glob[0]
-print("INFO: Parsing Black Duck Rapid Scan output from " + bd_rapid_output_file)
-with open(bd_rapid_output_file) as f:
-    output_data = json.load(f)
-
-developer_scan_url = output_data[0]['_meta']['href'] + "?limit=5000"
-if (globals.debug): print("DEBUG: Developer scan href: " + developer_scan_url)
-
-# Handle limited lifetime of developer runs gracefully
-try:
-    dev_scan_data = bd.get_json(developer_scan_url)
-except:
-    print(f"ERROR: Unable to fetch developer scan '{developer_scan_url}' - note that these are limited lifetime and this process must run immediately following the rapid scan")
-    raise
-
-# TODO: Handle error if can't read file
-if (globals.debug): print("DEBUG: Developer scan data: " + json.dumps(dev_scan_data, indent=4) + "\n")
+rapid_scan_data = bo.get_rapid_scan_results(bd_output_dir, bd)
 
 # Prepare SARIF output structures
 runs = []
@@ -392,23 +217,21 @@ results = []
 fix_pr_data = dict()
 comment_on_pr_comments = []
 
-for item in dev_scan_data['items']:
+for item in rapid_scan_data['items']:
     if (globals.debug):
         print(f"DEBUG: Component: {item['componentIdentifier']}")
-        print(item)
+        #print(item)
         #sys.exit(1)
 
-        comp_domain, comp_name, comp_version = parse_component_id(item['componentIdentifier'])
+    comp_ns, comp_name, comp_version = bu.parse_component_id(item['componentIdentifier'])
 
-        # If comparing to baseline, look up in cache and continue if already exists
-        if (not allcomps and item['componentName'] in baseline_comp_cache):
-            #if (item['versionName'] == baseline_comp_cache[item['componentName']]):
-            if (item['versionName'] in baseline_comp_cache[item['componentName']] and baseline_comp_cache[item['componentName']][item['versionName']] == 1):
-            #if (baseline_comp_cache[item['componentName']][item['versionName']] == 1):
-                if (globals.debug): print(f"DEBUG:   Skipping component {item['componentName']} version {item['versionName']} because it was already seen in baseline")
-                continue
-            else:
-                if (globals.debug): print(f"DEBUG:   Including component {item['componentName']} version {item['versionName']} because it was not seen in baseline")
+    # If comparing to baseline, look up in cache and continue if already exists
+    if (not allcomps and item['componentName'] in baseline_comp_cache):
+        if (item['versionName'] in baseline_comp_cache[item['componentName']] and baseline_comp_cache[item['componentName']][item['versionName']] == 1):
+            if (globals.debug): print(f"DEBUG:   Skipping component {item['componentName']} version {item['versionName']} because it was already seen in baseline")
+            continue
+        else:
+            if (globals.debug): print(f"DEBUG:   Including component {item['componentName']} version {item['versionName']} because it was not seen in baseline")
 
     # Is this a direct dependency?
     dependency_type = "Direct"
@@ -418,32 +241,31 @@ for item in dev_scan_data['items']:
     direct_ancestors = dict()
 
     if (globals.debug): print(f"DEBUG: Looking for {item['componentIdentifier']}")
-    node_domain, node_name, node_version = parse_component_id(item['componentIdentifier'])
     if (globals.debug):
-        print(f"DEBUG: node_domain={node_domain} node_name={node_name} node_version={node_version}")
+        print(f"DEBUG: comp_ns={comp_ns} comp_name={comp_name} comp_version={comp_version}")
 
     # Matching in the BDIO requires an http: prefix
-    if (node_domain == "npmjs"):
+    if (comp_ns == "npmjs"):
         node_http_name = NpmUtils.convert_to_bdio(item['componentIdentifier'])
-    elif (node_domain == "maven"):
+    elif (comp_ns == "maven"):
         node_http_name = MavenUtils.convert_to_bdio(item['componentIdentifier'])
     else:
-        print(f"ERROR: Domain '{node_domain}' not supported yet")
+        print(f"ERROR: Domain '{comp_ns}' not supported yet")
         sys.exit(1)
 
     if (globals.debug): print(f"DEBUG: Looking for {node_http_name}")
-    ans = nx.ancestors(G, node_http_name)
+    ans = nx.ancestors(bdio_graph, node_http_name)
     ans_list = list(ans)
     if (globals.debug): print(f"DEBUG:   Ancestors are: {ans_list}")
-    pred = nx.DiGraph.predecessors(G, node_http_name)
+    pred = nx.DiGraph.predecessors(bdio_graph, node_http_name)
     pred_list = list(pred)
     if (globals.debug): print(f"DEBUG:   Predecessors are: {ans_list}")
     if (len(ans_list) != 1):
         dependency_type = "Transitive"
 
         # If this is a transitive dependency, what are the flows?
-        for proj in projects:
-            dep_paths = nx.all_simple_paths(G, source=proj, target=node_http_name)
+        for proj in bdio_projects:
+            dep_paths = nx.all_simple_paths(bdio_graph, source=proj, target=node_http_name)
             if (globals.debug): print(f"DEBUG: Paths to '{node_http_name}'")
             paths = []
             for path in dep_paths:
@@ -465,83 +287,57 @@ for item in dev_scan_data['items']:
 
                     direct_ancestors[direct_dep] = 1
                     if (globals.debug): print(f"DEBUG: Direct ancestor: {direct_dep} is of type {node_domain}")
-                    if (node_domain == "npmjs"):
-                        NpmUtils.attempt_indirect_upgrade(node_name, node_version, direct_name, direct_version)
+                    if (comp_ns == "npmjs"):
+                        NpmUtils.attempt_indirect_upgrade(comp_ns, comp_version, direct_name, direct_version)
                     else:
-                        if (globals.debug): print(f"DEBUG: Domain '{node_domain}' cannot be auto upgraded")
+                        if (globals.debug): print(f"DEBUG: Domain '{comp_ns}' cannot be auto upgraded")
 
     # Get component upgrade advice
-    if (globals.debug): print(f"DEBUG: Search for component '{item['componentIdentifier']}'")
-    params = {
-            'q': [ item['componentIdentifier'] ]
-            }
-    search_results = bd.get_items('/api/components', params=params)
-    # There should be exactly one result!
-    # TODO: Error checking?
-    for result in search_results:
-        component_result = result
-    if (globals.debug): print("DEBUG: Component search result=" + json.dumps(component_result, indent=4) + "\n")
-
-    # Get component upgrade data
-    if (globals.debug): print(f"DBEUG: Looking up upgrade guidance for component '{component_result['componentName']}'")
-    component_upgrade_data = bd.get_json(component_result['version'] + "/upgrade-guidance")
-    if (globals.debug): print("DEBUG: Component upgrade data=" + json.dumps(component_upgrade_data, indent=4) + "\n")
+    shortTerm, longTerm = bu.get_upgrade_guidance(bd, item['componentIdentifier'])
 
     upgrade_version = None
     if (upgrade_major):
-        if ("longTerm" in component_upgrade_data.keys()):
-            upgrade_version = component_upgrade_data['longTerm']['versionName']
+        if (longTerm != None):
+            upgrade_version = longTerm
     else:
-        if ("shortTerm" in component_upgrade_data.keys()):
-            upgrade_version = component_upgrade_data['shortTerm']['versionName']
-
-    # TODO: Process BDIO file from blackduck output directory to build
-    # dependency graph, use NetworkX for Python, locate package node and
-    # then use networkx.DiGraph.predecessors to access parents.
-    #
-    # Use hub-rest-api-python/examples/bdio_update_project_name.py as
-    # a reference.
+        if (shortTerm != None):
+            upgrade_version = shortTerm
 
     if (globals.debug): print(f"DEUBG: Detected package files={detected_package_files} item={item}")
-    package_file, package_line = detect_package_file(detected_package_files, item['componentIdentifier'], item['componentName'])
+    package_file, package_line = bu.detect_package_file(detected_package_files, item['componentIdentifier'], item['componentName'])
 
     if (globals.debug): print(f"DEBUG: package file for {item['componentIdentifier']} is {package_file} on line {package_line} type is {dependency_type}")
 
-    # Note the details for generating a fix pr
-    ptype, name, current_version = parse_component_id(item['componentIdentifier'])
-
     if (dependency_type == "Direct" and upgrade_version != None):
         fix_pr_node = dict()
-        fix_pr_node['componentName'] = name
-        fix_pr_node['versionFrom'] = component_upgrade_data['versionName']
+        fix_pr_node['componentName'] = comp_name
+        fix_pr_node['versionFrom'] = comp_version
         fix_pr_node['versionTo'] = upgrade_version
-        fix_pr_node['scheme'] = ptype
-        fix_pr_node['filename'] = remove_cwd_from_filename(package_file)
+        fix_pr_node['ns'] = comp_ns
+        fix_pr_node['filename'] = bu.remove_cwd_from_filename(package_file)
         fix_pr_node['comments'] = []
         fix_pr_node['comments_markdown'] = ["| ID | Severity | Description | Vulnerable version | Upgrade to |", "| --- | --- | --- | --- | --- |"]
         fix_pr_node['comments_markdown_footer'] = ""
 
-    # Loop through polciy violations and append to SARIF output data
+    # Loop through policy violations and append to SARIF output data
 
     if (globals.debug):
         print(f"DEBUG: Loop through policy violations")
         print(item['policyViolationVulnerabilities'])
 
-#     comments_markdown = ["| Component | Severity | Policy | Description | Vulnerable version | Upgrade to |",
-
     for vuln in item['policyViolationVulnerabilities']:
         if (upgrade_version != None):
             message = f"* {vuln['name']} - {vuln['vulnSeverity']} severity vulnerability violates policy '{vuln['violatingPolicies'][0]['policyName']}': *{vuln['description']}* Recommended to upgrade to version {upgrade_version}. {dependency_type} dependency."
-            message_markdown = f"| {vuln['name']} | {vuln['vulnSeverity']} | {vuln['description']} | {current_version} | {upgrade_version} | "
-            comment_on_pr = f"| {name} | {dependency_type} | {vuln['name']} |  {vuln['vulnSeverity']} | {vuln['violatingPolicies'][0]['policyName']} | {vuln['description']} | {current_version} | {upgrade_version} |"
+            message_markdown = f"| {vuln['name']} | {vuln['vulnSeverity']} | {vuln['description']} | {comp_version} | {upgrade_version} | "
+            comment_on_pr = f"| {vuln['name']} | {dependency_type} | {vuln['name']} |  {vuln['vulnSeverity']} | {vuln['violatingPolicies'][0]['policyName']} | {vuln['description']} | {comp_version} | {upgrade_version} |"
         else:
             message = f"* {vuln['name']} - {vuln['vulnSeverity']} severity vulnerability violates policy '{vuln['violatingPolicies'][0]['policyName']}': *{vuln['description']}* No upgrade available at this time. {dependency_type} dependency."
-            message_markdown = f"| {vuln['name']} | {vuln['vulnSeverity']} | {vuln['description']} | {current_version} | {upgrade_version} | "
-            comment_on_pr = f"| {name} | {dependency_type} | {vuln['name']} | {vuln['vulnSeverity']} | {vuln['violatingPolicies'][0]['policyName']} | {vuln['description']} | {current_version} | N/A |"
+            message_markdown = f"| {vuln['name']} | {vuln['vulnSeverity']} | {vuln['description']} | {comp_version} | {upgrade_version} | "
+            comment_on_pr = f"| {vuln['name']} | {dependency_type} | {vuln['name']} | {vuln['vulnSeverity']} | {vuln['violatingPolicies'][0]['policyName']} | {vuln['description']} | {comp_version} | N/A |"
 
         if (dependency_type == "Direct"):
-            message = message + f"Fix in package file '{remove_cwd_from_filename(package_file)}'"
-            message_markdown_footer = f"**Fix in package file '{remove_cwd_from_filename(package_file)}'**"
+            message = message + f"Fix in package file '{bu.remove_cwd_from_filename(package_file)}'"
+            message_markdown_footer = f"**Fix in package file '{bu.remove_cwd_from_filename(package_file)}'**"
         else:
             if (len(dependency_paths) > 0):
                 message = message + f"Find dependency in {dependency_paths[0]}"
@@ -559,21 +355,21 @@ for item in dev_scan_data['items']:
         result = dict()
         result['ruleId'] = vuln['name']
         message = dict()
-        message['text'] = f"This file introduces a {vuln['vulnSeverity']} severity vulnerability in {component_result['componentName']}."
+        message['text'] = f"This file introduces a {vuln['vulnSeverity']} severity vulnerability in {comp_name}."
         result['message'] = message
         locations = []
         loc = dict()
-        loc['file'] = remove_cwd_from_filename(package_file)
+        loc['file'] = bu.remove_cwd_from_filename(package_file)
         # TODO: Can we reference the line number in the future, using project inspector?
         loc['line'] = package_line
 
         tool_rule = dict()
         tool_rule['id'] = vuln['name']
         shortDescription = dict()
-        shortDescription['text'] = f"{vuln['name']} - {vuln['vulnSeverity']} severity vulnerability in {component_result['componentName']}"
+        shortDescription['text'] = f"{vuln['name']} - {vuln['vulnSeverity']} severity vulnerability in {comp_name}"
         tool_rule['shortDescription'] = shortDescription
         fullDescription = dict()
-        fullDescription['text'] = f"This file introduces a {vuln['vulnSeverity']} severity vulnerability in {component_result['componentName']}"
+        fullDescription['text'] = f"This file introduces a {vuln['vulnSeverity']} severity vulnerability in {comp_name}"
         tool_rule['fullDescription'] = fullDescription
         rule_help = dict()
         rule_help['text'] = ""
@@ -583,7 +379,7 @@ for item in dev_scan_data['items']:
             rule_help['markdown'] = f"**{vuln['name']}:** *{vuln['description']}*\n\nNo upgrade available at this time.\n\n"
 
         if (dependency_type == "Direct"):
-            rule_help['markdown'] = rule_help['markdown'] + f"Fix in package file '{remove_cwd_from_filename(package_file)}'"
+            rule_help['markdown'] = rule_help['markdown'] + f"Fix in package file '{bu.remove_cwd_from_filename(package_file)}'"
         else:
             if (len(dependency_paths) > 0):
                 rule_help['markdown'] = rule_help['markdown'] + f" Find dependency in **{dependency_paths[0]}**."
@@ -620,6 +416,7 @@ for item in dev_scan_data['items']:
         # Calculate fingerprint using simply the CVE/BDSA - the scope is the project in GitHub, so this should be fairly accurate for identifying a unique issue.
         # Guidance from https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning#preventing-duplicate-alerts-using-fingerprints
         # and https://docs.oasis-open.org/sarif/sarif/v2.1.0/cs01/sarif-v2.1.0-cs01.html#_Toc16012611
+        # TODO Should this just leave it alone and let GitHub calculate it?
         partialFingerprints = dict()
         primaryLocationLineHash = hashlib.sha224(b"{vuln['name']}").hexdigest()
         partialFingerprints['primaryLocationLineHash'] = primaryLocationLineHash
@@ -628,7 +425,7 @@ for item in dev_scan_data['items']:
         results.append(result)
 
         if (dependency_type == "Direct" and upgrade_version != None):
-            fix_pr_data[node_name + "@" + node_version] = fix_pr_node
+            fix_pr_data[comp_name + "@" + comp_name] = fix_pr_node
             #fix_pr_data.append(fix_pr_node)
 
 run['results'] = results
@@ -678,28 +475,25 @@ if (fix_pr and len(fix_pr_data.values()) > 0):
     pulls = get_pull_requests(g, github_repo)
 
     for fix_pr_node in fix_pr_data.values():
-        if (globals.debug): print(f"DEBUG: Fix '{fix_pr_node['componentName']}' version '{fix_pr_node['versionFrom']}' in file '{fix_pr_node['filename']}' using scheme '{fix_pr_node['scheme']}' to version '{fix_pr_node['versionTo']}'")
+        if (globals.debug): print(f"DEBUG: Fix '{fix_pr_node['componentName']}' version '{fix_pr_node['versionFrom']}' in file '{fix_pr_node['filename']}' using ns '{fix_pr_node['ns']}' to version '{fix_pr_node['versionTo']}'")
 
         pull_request_title = f"Black Duck: Upgrade {fix_pr_node['componentName']} to version {fix_pr_node['versionTo']} fix known security vulerabilities"
         if pull_request_title in pulls:
             if (globals.debug): print(f"DEBUG: Skipping pull request for {fix_pr_node['componentName']}' version '{fix_pr_node['versionFrom']} as it is already present")
             continue
 
-        if (fix_pr_node['scheme'] == "npmjs"):
+        if (fix_pr_node['ns'] == "npmjs"):
             files_to_patch = NpmUtils.upgrade_npm_dependency(fix_pr_node['filename'], fix_pr_node['componentName'], fix_pr_node['versionFrom'], fix_pr_node['versionTo'])
             if (globals.debug): print(f"DEBUG: Files to patch are: {files_to_patch}")
 
-            #fix_pr_filename, local_filename = generate_fix_pr_npmjs(fix_pr_node['filename'], fix_pr_node['filename'] + ".local", fix_pr_node['componentName'], fix_pr_node['versionFrom'], fix_pr_node['versionTo'])
-            #fix_pr_filename = remove_cwd_from_filename(fix_pr_filename)
-
             github_commit_file_and_create_fixpr(g, github_token, github_api_url, github_repo, github_branch, files_to_patch, fix_pr_node)
-        elif (fix_pr_node['scheme'] == "maven"):
+        elif (fix_pr_node['ns'] == "maven"):
             files_to_patch = MavenUtils.upgrade_maven_dependency(fix_pr_node['filename'], fix_pr_node['componentName'], fix_pr_node['versionFrom'], fix_pr_node['versionTo'])
             if (globals.debug): print(f"DEBUG: Files to patch are: {files_to_patch}")
             github_commit_file_and_create_fixpr(g, github_token, github_api_url, github_repo, github_branch,
                                                 files_to_patch, fix_pr_node)
         else:
-            print(f"INFO: Generating a Fix PR for packages of type '{fix_pr_node['scheme']}' is not supported yet")
+            print(f"INFO: Generating a Fix PR for packages of type '{fix_pr_node['ns']}' is not supported yet")
 
 # Optionally comment on the pull request this is for
 
@@ -812,10 +606,3 @@ if (len(comment_on_pr_comments) > 0):
 else:
     print(f"INFO: No new components found, nothing to report")
     sys.exit(0)
-
-#
-#Synopsys Black Duck found the following vulnerabilities in the component {fix_pr_node['componentName']}:
-#
-#'''
-#    body = body + "\n".join(fix_pr_node['comments_markdown']) + "\n\n" + fix_pr_node['comments_markdown_footer']
-#
